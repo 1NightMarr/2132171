@@ -1,0 +1,12 @@
+import requests, json, urllib3
+urllib3.disable_warnings()
+
+resp = requests.get(
+    "https://your-qradar-host/api/asset_model/assets",
+    headers={"Accept": "application/json", "Version": "12.0", "Range": "items=0-0"},
+    auth=("admin", "your-password"),
+    verify=False
+)
+
+print("Status:", resp.status_code)
+print("Response:", resp.text[:500])  # ← додай цей рядок
