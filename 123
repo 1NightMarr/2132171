@@ -11,8 +11,8 @@ sync_servers_to_refset.py
 """
 
 import requests
-import json
 import urllib3
+import json
 import sys
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -21,7 +21,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # CONFIG — змінити під своє середовище
 # ──────────────────────────────────────────────
 QRADAR_HOST  = "https://your-qradar-host"   # напр. https://192.168.1.10
-SEC_TOKEN    = "your-sec-token-here"         # Admin → Authorized Services
+QRADAR_USER  = "admin"                       # логін QRadar
+QRADAR_PASS  = "your-password-here"          # пароль QRadar
 REF_SET_NAME = "Servers_IPs"                 # назва Reference Set у QRadar
 VERIFY_SSL   = False                         # True якщо є валідний сертифікат
 
@@ -31,12 +32,12 @@ SERVER_KEYWORDS = ["server", "сервер"]       # без урахування
 # ──────────────────────────────────────────────
 
 HEADERS = {
-    "SEC": SEC_TOKEN,
     "Accept": "application/json",
     "Content-Type": "application/json",
     "Version": "12.0",
 }
 
+AUTH = (QRADAR_USER, QRADAR_PASS)
 BASE = QRADAR_HOST.rstrip("/")
 
 
@@ -52,6 +53,7 @@ def get_all_assets() -> list[dict]:
         resp = requests.get(
             f"{BASE}/api/asset_model/assets",
             headers={**HEADERS, "Range": f"items={start}-{start + page_size - 1}"},
+            auth=AUTH,
             verify=VERIFY_SSL,
         )
 
@@ -122,6 +124,7 @@ def ensure_ref_set_exists():
     resp = requests.get(
         f"{BASE}/api/reference_data/sets/{REF_SET_NAME}",
         headers=HEADERS,
+        auth=AUTH,
         verify=VERIFY_SSL,
     )
     if resp.status_code == 200:
@@ -134,6 +137,7 @@ def ensure_ref_set_exists():
         f"{BASE}/api/reference_data/sets",
         headers=HEADERS,
         params={"name": REF_SET_NAME, "element_type": "IP"},
+        auth=AUTH,
         verify=VERIFY_SSL,
     )
     if resp.status_code in (200, 201):
@@ -155,6 +159,7 @@ def bulk_load_ips(ips: list[str]):
         f"{BASE}/api/reference_data/sets/bulk_load/{REF_SET_NAME}",
         headers=HEADERS,
         data=json.dumps(ips),
+        auth=AUTH,
         verify=VERIFY_SSL,
     )
 
