@@ -1,7 +1,7 @@
 """
 sync_servers_to_refset.py
 ─────────────────────────
-Тягне IP-адреси серверів з QRadar через AQL запит.
+Тягне IP-адреси серверів з QRadar через AQL запит (FROM simarc).
 
 Фільтрація:
   1. Asset Category == "Server"
@@ -27,11 +27,6 @@ VERIFY_SSL      = False
 
 REF_SET_WINDOWS = "Windows_Servers_IPs"
 REF_SET_LINUX   = "Linux_Servers_IPs"
-
-# AQL поля — якщо назви відрізняються, змінити тут
-FIELD_IP       = "IP Address"
-FIELD_CATEGORY = "Asset Category"
-FIELD_TYPE     = "Device Type"
 # ──────────────────────────────────────────────
 
 HEADERS = {
@@ -43,11 +38,30 @@ HEADERS = {
 
 BASE = QRADAR_HOST.rstrip("/")
 
-AQL = f"""
-    SELECT "{FIELD_IP}", "{FIELD_CATEGORY}", "{FIELD_TYPE}"
-    FROM assets
-    WHERE "{FIELD_CATEGORY}" = 'Server'
+# ──────────────────────────────────────────────
+# AQL: використовуємо FROM simarc (база активів у QRadar)
+# Якщо назви полів відрізняються — перевір через:
+#   SELECT * FROM simarc LIMIT 5
+# ──────────────────────────────────────────────
+AQL = """
+    SELECT
+        "Asset IP Address" AS ip,
+        "Asset Category"   AS category,
+        "Technical User"   AS device_type
+    FROM simarc
+    WHERE "Asset Category" = 'Server'
 """
+
+# Альтернативний варіант якщо вище не спрацює:
+# AQL = """
+#     SELECT
+#         sourceip          AS ip,
+#         category          AS category,
+#         devicetype        AS device_type
+#     FROM events
+#     WHERE category = 'Server'
+#     LAST 7 DAYS
+# """
 
 
 def run_aql(query: str) -> list[dict]:
@@ -103,9 +117,15 @@ def run_aql(query: str) -> list[dict]:
         print(f"[!] Помилка отримання результатів: {results_resp.status_code} — {results_resp.text}")
         sys.exit(1)
 
-    # Результати можуть бути в "events" або "assets"
     data = results_resp.json()
-    records = data.get("assets") or data.get("events") or []
+
+    # simarc повертає в "assets", events — в "events"
+    records = (
+        data.get("assets")
+        or data.get("events")
+        or data.get("flows")
+        or []
+    )
     print(f"[+] Отримано записів: {len(records)}")
     return records
 
@@ -116,8 +136,20 @@ def classify_and_extract(records: list[dict]) -> tuple[list[str], list[str]]:
     linux_ips   = []
 
     for record in records:
-        ip          = (record.get(FIELD_IP)       or "").strip()
-        device_type = (record.get(FIELD_TYPE)      or "").strip()
+        # Підтримуємо обидва варіанти назв полів
+        ip = (
+            record.get("ip")
+            or record.get("Asset IP Address")
+            or record.get("sourceip")
+            or ""
+        ).strip()
+
+        device_type = (
+            record.get("device_type")
+            or record.get("Technical User")
+            or record.get("devicetype")
+            or ""
+        ).strip()
 
         if not ip or ip.startswith("162."):
             continue
@@ -128,6 +160,14 @@ def classify_and_extract(records: list[dict]) -> tuple[list[str], list[str]]:
             linux_ips.append(ip)
 
     return list(set(windows_ips)), list(set(linux_ips))
+
+
+def debug_print_fields(records: list[dict], limit: int = 3):
+    """Виводить перші N записів для діагностики назв полів."""
+    print("\n[DEBUG] Перші записи (для перевірки назв полів):")
+    for i, rec in enumerate(records[:limit]):
+        print(f"  [{i}] {json.dumps(rec, ensure_ascii=False)}")
+    print()
 
 
 def ensure_ref_set_exists(name: str):
@@ -180,24 +220,37 @@ def bulk_load_ips(ref_set_name: str, ips: list[str]):
 
 def main():
     print("=" * 60)
-    print("  QRadar AQL → Windows / Linux Reference Sets")
+    print("  QRadar AQL (simarc) → Windows / Linux Reference Sets")
     print("=" * 60)
 
     # 1. Виконати AQL запит
     records = run_aql(AQL)
 
-    # 2. Розкласти по категоріях
+    if not records:
+        print("[!] Записів не знайдено. Перевір AQL або назви полів.")
+        sys.exit(0)
+
+    # 2. Показати перші записи для діагностики полів
+    debug_print_fields(records)
+
+    # 3. Розкласти по категоріях
     windows_ips, linux_ips = classify_and_extract(records)
 
-    print(f"\n[+] Windows IP (WinSRV):  {len(windows_ips)}")
+    print(f"[+] Windows IP (WinSRV):  {len(windows_ips)}")
     print(f"[+] Linux IP (LinuxSRV):  {len(linux_ips)}")
 
-    # 3. Створити Reference Sets якщо не існують
+    if not windows_ips and not linux_ips:
+        print("\n[!] Жодного IP не класифіковано.")
+        print("    Перевір значення device_type у DEBUG виводі вище.")
+        print("    Заміни 'WinSRV' / 'LinuxSRV' на реальні значення з твоєї системи.")
+        sys.exit(0)
+
+    # 4. Створити Reference Sets якщо не існують
     print()
     ensure_ref_set_exists(REF_SET_WINDOWS)
     ensure_ref_set_exists(REF_SET_LINUX)
 
-    # 4. Завантажити IP
+    # 5. Завантажити IP
     print()
     bulk_load_ips(REF_SET_WINDOWS, windows_ips)
     bulk_load_ips(REF_SET_LINUX,   linux_ips)
