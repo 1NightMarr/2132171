@@ -1,12 +1,5 @@
-import requests, json, urllib3
-urllib3.disable_warnings()
-
-resp = requests.get(
-    "https://your-qradar-host/api/asset_model/assets",
-    headers={"Accept": "application/json", "Version": "12.0", "Range": "items=0-0"},
-    auth=("admin", "your-password"),
-    verify=False
-)
-asset = resp.json()[0]
-for p in asset.get("properties", []):
-    print(p["name"], "→", p.get("value"))
+curl -k -H "SEC: your-api-token" \
+     -H "Version: 12.0" \
+     -H "Accept: application/json" \
+     -G "https://your-qradar-host/api/ariel/searches" \
+     --data-urlencode "query_expression=SELECT * FROM simarc LIMIT 3"
