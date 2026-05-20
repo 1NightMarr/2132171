@@ -1,27 +1,19 @@
-import requests, urllib3
+import requests, urllib3, json
 urllib3.disable_warnings()
 
 HOST  = "https://your-qradar-host"
 TOKEN = "your-api-token"
 
+# Спробуємо asset_model/properties — там список всіх можливих полів
 resp = requests.get(
-    f"{HOST}/api/asset_model/assets",
+    f"{HOST}/api/asset_model/properties",
     headers={
         "SEC": TOKEN,
         "Accept": "application/json",
         "Version": "12.0",
-        "Range": "items=0-49"   # беремо перші 50
     },
     verify=False
 )
 
-assets = resp.json()
-print(f"Всього отримано: {len(assets)}\n")
-
-for i, asset in enumerate(assets):
-    props = asset.get("properties", [])
-    if len(props) > 1:   # показуємо тільки ті що мають більше одного поля
-        print(f"--- Актив #{i} ---")
-        for p in props:
-            print(f"  {p.get('name')} → {p.get('value')}")
-        print()
+for p in resp.json():
+    print(p.get("name"), "→ id:", p.get("id"))
