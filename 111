@@ -1,19 +1,33 @@
-import requests, urllib3, json
+import requests, urllib3
 urllib3.disable_warnings()
 
 HOST  = "https://your-qradar-host"
 TOKEN = "your-api-token"
 
-# Спробуємо asset_model/properties — там список всіх можливих полів
 resp = requests.get(
-    f"{HOST}/api/asset_model/properties",
+    f"{HOST}/api/asset_model/assets",
     headers={
         "SEC": TOKEN,
         "Accept": "application/json",
         "Version": "12.0",
+        "Range": "items=0-49"  # перші 50
     },
     verify=False
 )
 
-for p in resp.json():
-    print(p.get("name"), "→ id:", p.get("id"))
+assets = resp.json()
+print(f"Отримано: {len(assets)} активів\n")
+
+# Підрахунок унікальних наборів полів
+field_combos = {}
+for asset in assets:
+    fields = tuple(sorted(p.get("name") for p in asset.get("properties", [])))
+    field_combos[fields] = field_combos.get(fields, 0) + 1
+
+print("=== Які набори полів зустрічаються ===")
+for fields, count in sorted(field_combos.items(), key=lambda x: -x[1]):
+    print(f"  {count}x → {list(fields)}")
+
+# Скільки активів мають інтерфейси (IP)
+with_ip = sum(1 for a in assets if a.get("interfaces"))
+print(f"\nАктивів з IP-адресою: {with_ip} з {len(assets)}")
