@@ -10,12 +10,18 @@ resp = requests.get(
         "SEC": TOKEN,
         "Accept": "application/json",
         "Version": "12.0",
-        "Range": "items=0-0"
+        "Range": "items=0-49"   # беремо перші 50
     },
     verify=False
 )
 
-asset = resp.json()[0]
-print("=== PROPERTIES ===")
-for p in asset.get("properties", []):
-    print(f"  {p.get('name')} → {p.get('value')}")
+assets = resp.json()
+print(f"Всього отримано: {len(assets)}\n")
+
+for i, asset in enumerate(assets):
+    props = asset.get("properties", [])
+    if len(props) > 1:   # показуємо тільки ті що мають більше одного поля
+        print(f"--- Актив #{i} ---")
+        for p in props:
+            print(f"  {p.get('name')} → {p.get('value')}")
+        print()
