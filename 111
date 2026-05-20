@@ -1,4 +1,4 @@
-import requests, urllib3, json
+import requests, urllib3
 urllib3.disable_warnings()
 
 HOST  = "https://your-qradar-host"
@@ -15,4 +15,4 @@ resp = requests.get(
 )
 
 for db in resp.json():
-    print(db.get("name"))
+    print(db)
