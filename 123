@@ -1,13 +1,13 @@
 """
 sync_servers_to_refset.py
 ─────────────────────────
-Тягне IP-адреси серверів з QRadar Asset Model,
-фільтрує:
-  • тільки пристрої з роллю / типом "Server"
-  • виключає IP, що починаються на 162.
-Потім записує результат у вказаний Reference Set.
+Тягне IP-адреси серверів з QRadar Asset Model.
 
-Налаштування — змінити константи в секції CONFIG нижче.
+Фільтрація:
+  1. Asset Category == "Server"
+  2. Device Type == "WinSRV"   → Reference Set: Windows_Servers_IPs
+     Device Type == "LinuxSRV" → Reference Set: Linux_Servers_IPs
+  3. Виключає IP, що починаються на 162.
 """
 
 import requests
@@ -20,24 +20,21 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # ──────────────────────────────────────────────
 # CONFIG — змінити під своє середовище
 # ──────────────────────────────────────────────
-QRADAR_HOST  = "https://your-qradar-host"   # напр. https://192.168.1.10
-QRADAR_USER  = "admin"                       # логін QRadar
-QRADAR_PASS  = "your-password-here"          # пароль QRadar
-REF_SET_NAME = "Servers_IPs"                 # назва Reference Set у QRadar
-VERIFY_SSL   = False                         # True якщо є валідний сертифікат
+QRADAR_HOST     = "https://your-qradar-host"   # напр. https://192.168.1.10
+API_TOKEN       = "your-api-token-here"         # SEC токен
+VERIFY_SSL      = False
 
-# Ключове слово для фільтрації серверів в полі "type" або "description"
-# QRadar зберігає тип активу в asset properties; перевір своє поле
-SERVER_KEYWORDS = ["server", "сервер"]       # без урахування регістру
+REF_SET_WINDOWS = "Windows_Servers_IPs"
+REF_SET_LINUX   = "Linux_Servers_IPs"
 # ──────────────────────────────────────────────
 
 HEADERS = {
+    "SEC": API_TOKEN,
     "Accept": "application/json",
     "Content-Type": "application/json",
     "Version": "12.0",
 }
 
-AUTH = (QRADAR_USER, QRADAR_PASS)
 BASE = QRADAR_HOST.rstrip("/")
 
 
@@ -53,12 +50,10 @@ def get_all_assets() -> list[dict]:
         resp = requests.get(
             f"{BASE}/api/asset_model/assets",
             headers={**HEADERS, "Range": f"items={start}-{start + page_size - 1}"},
-            auth=AUTH,
             verify=VERIFY_SSL,
         )
 
         if resp.status_code == 416:
-            # Вийшли за межі — все завантажено
             break
         if resp.status_code not in (200, 206):
             print(f"[!] Помилка отримання активів: {resp.status_code} — {resp.text}")
@@ -80,136 +75,135 @@ def get_all_assets() -> list[dict]:
     return assets
 
 
-def is_server(asset: dict) -> bool:
-    """
-    Перевіряє, чи є актив сервером.
-    QRadar зберігає властивості в asset['properties'] — список об'єктів
-    з полями 'name' та 'value'.
-    """
-    properties = asset.get("properties", [])
-    for prop in properties:
-        name  = (prop.get("name")  or "").lower()
-        value = (prop.get("value") or "").lower()
+def get_property(asset: dict, field_name: str) -> str:
+    """Повертає значення поля з asset['properties'] без урахування регістру."""
+    for prop in asset.get("properties", []):
+        if (prop.get("name") or "").lower() == field_name.lower():
+            return (prop.get("value") or "").strip()
+    return ""
 
-        # Поля, де QRadar зазвичай зберігає тип пристрою
-        if name in ("device_type", "asset_type", "type", "role", "os_name", "technical_user"):
-            for keyword in SERVER_KEYWORDS:
-                if keyword in value:
-                    return True
 
-    # Також перевіряємо поле domain / unified name як fallback
-    unified = (asset.get("domain_id") or "")
-    return False
+def classify_asset(asset: dict) -> str | None:
+    """
+    Повертає:
+      "windows" — якщо Category=Server і DeviceType=WinSRV
+      "linux"   — якщо Category=Server і DeviceType=LinuxSRV
+      None      — не підходить
+    """
+    category    = get_property(asset, "asset_category")
+    device_type = get_property(asset, "device_type")
+
+    if category.lower() != "server":
+        return None
+
+    if device_type == "WinSRV":
+        return "windows"
+    if device_type == "LinuxSRV":
+        return "linux"
+
+    return None
 
 
 def extract_ips(asset: dict) -> list[str]:
-    """Витягує всі IP-адреси з активу."""
+    """Витягує IP-адреси з активу, виключає 162.x.x.x."""
     ips = []
     for iface in asset.get("interfaces", []):
-        ip = iface.get("ip_addresses", [])
-        for addr in ip:
-            val = addr.get("value")
-            if val:
-                ips.append(val.strip())
+        for addr in iface.get("ip_addresses", []):
+            val = (addr.get("value") or "").strip()
+            if val and not val.startswith("162."):
+                ips.append(val)
     return ips
 
 
-def filter_ips(ips: list[str]) -> list[str]:
-    """Виключає IP, що починаються на 162."""
-    return [ip for ip in ips if not ip.startswith("162.")]
-
-
-def ensure_ref_set_exists():
+def ensure_ref_set_exists(name: str):
     """Створює Reference Set якщо він ще не існує."""
     resp = requests.get(
-        f"{BASE}/api/reference_data/sets/{REF_SET_NAME}",
+        f"{BASE}/api/reference_data/sets/{name}",
         headers=HEADERS,
-        auth=AUTH,
         verify=VERIFY_SSL,
     )
     if resp.status_code == 200:
-        existing = resp.json().get("number_of_elements", 0)
-        print(f"[+] Reference Set '{REF_SET_NAME}' вже існує ({existing} елементів)")
+        count = resp.json().get("number_of_elements", 0)
+        print(f"[+] Reference Set '{name}' вже існує ({count} елементів)")
         return
 
-    print(f"[*] Створення Reference Set '{REF_SET_NAME}'...")
+    print(f"[*] Створення Reference Set '{name}'...")
     resp = requests.post(
         f"{BASE}/api/reference_data/sets",
         headers=HEADERS,
-        params={"name": REF_SET_NAME, "element_type": "IP"},
-        auth=AUTH,
+        params={"name": name, "element_type": "IP"},
         verify=VERIFY_SSL,
     )
     if resp.status_code in (200, 201):
-        print(f"[+] Reference Set створено")
+        print(f"[+] Reference Set '{name}' створено")
     else:
-        print(f"[!] Не вдалось створити Reference Set: {resp.status_code} — {resp.text}")
+        print(f"[!] Не вдалось створити '{name}': {resp.status_code} — {resp.text}")
         sys.exit(1)
 
 
-def bulk_load_ips(ips: list[str]):
+def bulk_load_ips(ref_set_name: str, ips: list[str]):
     """Завантажує список IP у Reference Set через bulk_load."""
     if not ips:
-        print("[!] Немає IP для завантаження")
+        print(f"[!] '{ref_set_name}' — немає IP для завантаження")
         return
 
-    print(f"[*] Завантаження {len(ips)} IP у '{REF_SET_NAME}'...")
+    print(f"[*] Завантаження {len(ips)} IP у '{ref_set_name}'...")
 
     resp = requests.post(
-        f"{BASE}/api/reference_data/sets/bulk_load/{REF_SET_NAME}",
+        f"{BASE}/api/reference_data/sets/bulk_load/{ref_set_name}",
         headers=HEADERS,
         data=json.dumps(ips),
-        auth=AUTH,
         verify=VERIFY_SSL,
     )
 
     if resp.status_code == 200:
-        result = resp.json()
-        print(f"[+] Успішно! Елементів у сеті: {result.get('number_of_elements', '?')}")
+        count = resp.json().get("number_of_elements", "?")
+        print(f"[+] Успішно! Елементів у '{ref_set_name}': {count}")
     else:
-        print(f"[!] Помилка bulk_load: {resp.status_code} — {resp.text}")
+        print(f"[!] Помилка bulk_load для '{ref_set_name}': {resp.status_code} — {resp.text}")
         sys.exit(1)
 
 
 def main():
-    print("=" * 55)
-    print("  QRadar: Asset Model → Reference Set (Servers only)")
-    print("=" * 55)
+    print("=" * 60)
+    print("  QRadar: Asset Model → Windows / Linux Reference Sets")
+    print("=" * 60)
 
     # 1. Завантажити всі активи
     assets = get_all_assets()
 
-    # 2. Фільтр: тільки сервери
-    server_assets = [a for a in assets if is_server(a)]
-    print(f"[+] Серверів знайдено: {len(server_assets)}")
+    # 2. Класифікувати та зібрати IP
+    windows_ips = []
+    linux_ips   = []
+    skipped     = 0
 
-    # 3. Зібрати всі IP з серверів
-    all_ips = []
-    for asset in server_assets:
-        all_ips.extend(extract_ips(asset))
+    for asset in assets:
+        kind = classify_asset(asset)
+        if kind is None:
+            skipped += 1
+            continue
+        ips = extract_ips(asset)
+        if kind == "windows":
+            windows_ips.extend(ips)
+        elif kind == "linux":
+            linux_ips.extend(ips)
 
-    # Унікальні IP
-    all_ips = list(set(all_ips))
-    print(f"[+] Унікальних IP (до фільтру): {len(all_ips)}")
+    windows_ips = list(set(windows_ips))
+    linux_ips   = list(set(linux_ips))
 
-    # 4. Виключити 162.*
-    filtered_ips = filter_ips(all_ips)
-    excluded = len(all_ips) - len(filtered_ips)
-    print(f"[+] Виключено 162.x.x.x: {excluded} шт.")
-    print(f"[+] Фінальний список IP: {len(filtered_ips)} шт.")
+    print(f"\n[+] Пропущено (не Server / не WinSRV / не LinuxSRV): {skipped}")
+    print(f"[+] Windows IP: {len(windows_ips)}")
+    print(f"[+] Linux IP:   {len(linux_ips)}")
 
-    if filtered_ips:
-        print("\n    Приклади IP:")
-        for ip in filtered_ips[:10]:
-            print(f"      {ip}")
-        if len(filtered_ips) > 10:
-            print(f"      ... і ще {len(filtered_ips) - 10}")
+    # 3. Створити Reference Sets якщо не існують
+    print()
+    ensure_ref_set_exists(REF_SET_WINDOWS)
+    ensure_ref_set_exists(REF_SET_LINUX)
 
-    # 5. Переконатись що Reference Set існує
-    ensure_ref_set_exists()
-
-    # 6. Bulk-завантаження
-    bulk_load_ips(filtered_ips)
+    # 4. Завантажити IP
+    print()
+    bulk_load_ips(REF_SET_WINDOWS, windows_ips)
+    bulk_load_ips(REF_SET_LINUX,   linux_ips)
 
     print("\n[✓] Готово!")
 
