@@ -1,11 +1,11 @@
-import requests, urllib3
+import requests, urllib3, json
 urllib3.disable_warnings()
 
 HOST  = "https://your-qradar-host"
 TOKEN = "your-api-token"
 
 resp = requests.get(
-    f"{HOST}/api/asset_model/properties",
+    f"{HOST}/api/ariel/databases",
     headers={
         "SEC": TOKEN,
         "Accept": "application/json",
@@ -14,5 +14,5 @@ resp = requests.get(
     verify=False
 )
 
-for p in resp.json():
-    print(f"  id: {p.get('id')}  |  name: {p.get('name')}  |  type: {p.get('data_type')}")
+for db in resp.json():
+    print(db.get("name"))
