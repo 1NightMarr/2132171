@@ -1,5 +1,144 @@
-curl -k -H "SEC: your-api-token" \
-     -H "Version: 12.0" \
-     -H "Accept: application/json" \
-     -G "https://your-qradar-host/api/ariel/searches" \
-     --data-urlencode "query_expression=SELECT * FROM simarc LIMIT 3"
+"""
+check_simarc_fields.py
+──────────────────────
+Діагностичний скрипт — показує реальні назви полів у simarc.
+"""
+
+import requests
+import urllib3
+import json
+import time
+import sys
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ──────────────────────────────────────────────
+QRADAR_HOST = "https://your-qradar-host"
+API_TOKEN   = "your-api-token-here"
+VERIFY_SSL  = False
+# ──────────────────────────────────────────────
+
+HEADERS = {
+    "SEC": API_TOKEN,
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "Version": "12.0",
+}
+
+BASE = QRADAR_HOST.rstrip("/")
+
+
+def run_aql(query: str) -> list[dict]:
+    print(f"\n[*] AQL: {query.strip()}")
+
+    resp = requests.post(
+        f"{BASE}/api/ariel/searches",
+        headers=HEADERS,
+        params={"query_expression": query.strip()},
+        verify=VERIFY_SSL,
+    )
+
+    if resp.status_code not in (200, 201):
+        print(f"[!] Помилка: {resp.status_code} — {resp.text}")
+        return []
+
+    search_id = resp.json().get("search_id")
+    print(f"[+] Search ID: {search_id}")
+    print("[*] Очікування", end="", flush=True)
+
+    while True:
+        time.sleep(2)
+        print(".", end="", flush=True)
+        s = requests.get(f"{BASE}/api/ariel/searches/{search_id}", headers=HEADERS, verify=VERIFY_SSL).json()
+        if s.get("status") == "COMPLETED":
+            print(" готово!")
+            break
+        elif s.get("status") == "ERROR":
+            print(f"\n[!] Помилка AQL: {s}")
+            return []
+
+    r = requests.get(f"{BASE}/api/ariel/searches/{search_id}/results", headers=HEADERS, verify=VERIFY_SSL)
+    data = r.json()
+    return data.get("assets") or data.get("events") or data.get("flows") or []
+
+
+def check_database_meta():
+    """Метадані бази simarc через API."""
+    print("\n" + "=" * 60)
+    print("  [1] Метадані бази simarc (/api/ariel/databases/simarc)")
+    print("=" * 60)
+
+    resp = requests.get(
+        f"{BASE}/api/ariel/databases/simarc",
+        headers=HEADERS,
+        verify=VERIFY_SSL,
+    )
+
+    if resp.status_code == 200:
+        data = resp.json()
+        fields = data.get("fields", [])
+        print(f"[+] Знайдено полів: {len(fields)}\n")
+        print(f"  {'Назва поля':<45} {'Тип'}")
+        print(f"  {'-'*45} {'-'*15}")
+        for f in fields:
+            print(f"  {f.get('name', ''):<45} {f.get('type', '')}")
+    else:
+        print(f"[!] Не вдалось отримати метадані: {resp.status_code} — {resp.text}")
+
+
+def check_sample_records():
+    """Отримати 3 записи і показати всі поля."""
+    print("\n" + "=" * 60)
+    print("  [2] Зразок записів: SELECT * FROM simarc LIMIT 3")
+    print("=" * 60)
+
+    records = run_aql("SELECT * FROM simarc LIMIT 3")
+
+    if not records:
+        print("[!] Записів не знайдено або помилка запиту.")
+        return
+
+    print(f"\n[+] Записів отримано: {len(records)}")
+    for i, rec in enumerate(records):
+        print(f"\n─── Запис #{i+1} ───")
+        for key, val in rec.items():
+            print(f"  {key:<45} = {val}")
+
+
+def check_all_databases():
+    """Список всіх доступних баз AQL."""
+    print("\n" + "=" * 60)
+    print("  [3] Всі доступні AQL бази (/api/ariel/databases)")
+    print("=" * 60)
+
+    resp = requests.get(
+        f"{BASE}/api/ariel/databases",
+        headers=HEADERS,
+        verify=VERIFY_SSL,
+    )
+
+    if resp.status_code == 200:
+        dbs = resp.json()
+        print(f"[+] Баз знайдено: {len(dbs)}\n")
+        for db in dbs:
+            name = db.get("name", db) if isinstance(db, dict) else db
+            print(f"  • {name}")
+    else:
+        print(f"[!] Помилка: {resp.status_code} — {resp.text}")
+
+
+def main():
+    print("=" * 60)
+    print("  QRadar — Діагностика полів simarc")
+    print("=" * 60)
+
+    check_all_databases()
+    check_database_meta()
+    check_sample_records()
+
+    print("\n[✓] Діагностика завершена.")
+    print("    Скинь вивід — і я підправлю основний скрипт під правильні назви полів.")
+
+
+if __name__ == "__main__":
+    main()
