@@ -1,12 +1,21 @@
-import requests, json, urllib3
+import requests, urllib3
 urllib3.disable_warnings()
 
+HOST  = "https://your-qradar-host"
+TOKEN = "your-api-token"
+
 resp = requests.get(
-    "https://your-qradar-host/api/asset_model/assets",
-    headers={"Accept": "application/json", "Version": "12.0", "Range": "items=0-0"},
-    auth=("admin", "your-password"),
+    f"{HOST}/api/asset_model/assets",
+    headers={
+        "SEC": TOKEN,
+        "Accept": "application/json",
+        "Version": "12.0",
+        "Range": "items=0-0"
+    },
     verify=False
 )
 
-print("Status:", resp.status_code)
-print("Response:", resp.text[:500])  # ← додай цей рядок
+asset = resp.json()[0]
+print("=== PROPERTIES ===")
+for p in asset.get("properties", []):
+    print(f"  {p.get('name')} → {p.get('value')}")
