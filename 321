@@ -16,6 +16,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 QRADAR_HOST = "https://your-qradar-host"
 API_TOKEN   = "your-api-token-here"
 VERIFY_SSL  = False
+TIMEOUT     = 30   # секунд на кожен HTTP запит
+POLL_EVERY  = 3    # секунд між перевірками статусу
+MAX_WAIT    = 120  # максимум секунд чекати результат
 # ──────────────────────────────────────────────
 
 HEADERS = {
@@ -31,63 +34,113 @@ BASE = QRADAR_HOST.rstrip("/")
 def run_aql(query: str) -> list[dict]:
     print(f"\n[*] AQL: {query.strip()}")
 
-    resp = requests.post(
-        f"{BASE}/api/ariel/searches",
-        headers=HEADERS,
-        params={"query_expression": query.strip()},
-        verify=VERIFY_SSL,
-    )
+    try:
+        resp = requests.post(
+            f"{BASE}/api/ariel/searches",
+            headers=HEADERS,
+            params={"query_expression": query.strip()},
+            verify=VERIFY_SSL,
+            timeout=TIMEOUT,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"[!] Помилка з'єднання: {e}")
+        return []
 
     if resp.status_code not in (200, 201):
-        print(f"[!] Помилка: {resp.status_code} — {resp.text}")
+        print(f"[!] Помилка запуску AQL: {resp.status_code}")
+        print(f"    Відповідь: {resp.text[:500]}")
         return []
 
     search_id = resp.json().get("search_id")
     print(f"[+] Search ID: {search_id}")
-    print("[*] Очікування", end="", flush=True)
+    print(f"[*] Очікування (макс {MAX_WAIT}с)...")
 
-    while True:
-        time.sleep(2)
-        print(".", end="", flush=True)
-        s = requests.get(f"{BASE}/api/ariel/searches/{search_id}", headers=HEADERS, verify=VERIFY_SSL).json()
-        if s.get("status") == "COMPLETED":
-            print(" готово!")
-            break
-        elif s.get("status") == "ERROR":
-            print(f"\n[!] Помилка AQL: {s}")
+    elapsed = 0
+    while elapsed < MAX_WAIT:
+        time.sleep(POLL_EVERY)
+        elapsed += POLL_EVERY
+
+        try:
+            s = requests.get(
+                f"{BASE}/api/ariel/searches/{search_id}",
+                headers=HEADERS,
+                verify=VERIFY_SSL,
+                timeout=TIMEOUT,
+            ).json()
+        except requests.exceptions.RequestException as e:
+            print(f"[!] Помилка перевірки статусу: {e}")
             return []
 
-    r = requests.get(f"{BASE}/api/ariel/searches/{search_id}/results", headers=HEADERS, verify=VERIFY_SSL)
+        status = s.get("status", "UNKNOWN")
+        progress = s.get("progress", 0)
+        print(f"    [{elapsed:>3}с] Статус: {status} | Прогрес: {progress}%")
+
+        if status == "COMPLETED":
+            print("[+] Запит завершено!")
+            break
+        elif status == "ERROR":
+            print(f"[!] AQL помилка: {json.dumps(s, ensure_ascii=False)}")
+            return []
+    else:
+        print(f"[!] Таймаут: запит не завершився за {MAX_WAIT}с")
+        return []
+
+    try:
+        r = requests.get(
+            f"{BASE}/api/ariel/searches/{search_id}/results",
+            headers=HEADERS,
+            verify=VERIFY_SSL,
+            timeout=TIMEOUT,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"[!] Помилка отримання результатів: {e}")
+        return []
+
+    if r.status_code != 200:
+        print(f"[!] Помилка результатів: {r.status_code} — {r.text[:500]}")
+        return []
+
     data = r.json()
-    return data.get("assets") or data.get("events") or data.get("flows") or []
+
+    # Показати всі ключі у відповіді для діагностики
+    print(f"[DEBUG] Ключі у відповіді: {list(data.keys())}")
+
+    records = data.get("assets") or data.get("events") or data.get("flows") or []
+    print(f"[+] Записів: {len(records)}")
+    return records
 
 
 def check_database_meta():
     """Метадані бази simarc через API."""
     print("\n" + "=" * 60)
-    print("  [1] Метадані бази simarc (/api/ariel/databases/simarc)")
+    print("  [1] Метадані полів simarc")
     print("=" * 60)
 
-    resp = requests.get(
-        f"{BASE}/api/ariel/databases/simarc",
-        headers=HEADERS,
-        verify=VERIFY_SSL,
-    )
+    try:
+        resp = requests.get(
+            f"{BASE}/api/ariel/databases/simarc",
+            headers=HEADERS,
+            verify=VERIFY_SSL,
+            timeout=TIMEOUT,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"[!] Помилка: {e}")
+        return
 
     if resp.status_code == 200:
         data = resp.json()
         fields = data.get("fields", [])
-        print(f"[+] Знайдено полів: {len(fields)}\n")
-        print(f"  {'Назва поля':<45} {'Тип'}")
-        print(f"  {'-'*45} {'-'*15}")
+        print(f"[+] Полів знайдено: {len(fields)}\n")
+        print(f"  {'Назва поля':<50} {'Тип'}")
+        print(f"  {'-'*50} {'-'*15}")
         for f in fields:
-            print(f"  {f.get('name', ''):<45} {f.get('type', '')}")
+            print(f"  {f.get('name', ''):<50} {f.get('type', '')}")
     else:
-        print(f"[!] Не вдалось отримати метадані: {resp.status_code} — {resp.text}")
+        print(f"[!] {resp.status_code} — {resp.text[:300]}")
 
 
 def check_sample_records():
-    """Отримати 3 записи і показати всі поля."""
+    """3 записи з simarc."""
     print("\n" + "=" * 60)
     print("  [2] Зразок записів: SELECT * FROM simarc LIMIT 3")
     print("=" * 60)
@@ -95,36 +148,40 @@ def check_sample_records():
     records = run_aql("SELECT * FROM simarc LIMIT 3")
 
     if not records:
-        print("[!] Записів не знайдено або помилка запиту.")
+        print("[!] Записів не знайдено.")
         return
 
-    print(f"\n[+] Записів отримано: {len(records)}")
     for i, rec in enumerate(records):
         print(f"\n─── Запис #{i+1} ───")
         for key, val in rec.items():
-            print(f"  {key:<45} = {val}")
+            print(f"  {str(key):<50} = {val}")
 
 
 def check_all_databases():
-    """Список всіх доступних баз AQL."""
+    """Список всіх AQL баз."""
     print("\n" + "=" * 60)
-    print("  [3] Всі доступні AQL бази (/api/ariel/databases)")
+    print("  [3] Всі AQL бази")
     print("=" * 60)
 
-    resp = requests.get(
-        f"{BASE}/api/ariel/databases",
-        headers=HEADERS,
-        verify=VERIFY_SSL,
-    )
+    try:
+        resp = requests.get(
+            f"{BASE}/api/ariel/databases",
+            headers=HEADERS,
+            verify=VERIFY_SSL,
+            timeout=TIMEOUT,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"[!] Помилка: {e}")
+        return
 
     if resp.status_code == 200:
         dbs = resp.json()
-        print(f"[+] Баз знайдено: {len(dbs)}\n")
+        print(f"[+] Баз: {len(dbs)}\n")
         for db in dbs:
             name = db.get("name", db) if isinstance(db, dict) else db
             print(f"  • {name}")
     else:
-        print(f"[!] Помилка: {resp.status_code} — {resp.text}")
+        print(f"[!] {resp.status_code} — {resp.text[:300]}")
 
 
 def main():
@@ -136,8 +193,7 @@ def main():
     check_database_meta()
     check_sample_records()
 
-    print("\n[✓] Діагностика завершена.")
-    print("    Скинь вивід — і я підправлю основний скрипт під правильні назви полів.")
+    print("\n[✓] Готово! Скинь вивід — підправлю основний скрипт.")
 
 
 if __name__ == "__main__":
