@@ -90,8 +90,8 @@ def classify_asset(asset: dict) -> str | None:
       "linux"   — якщо Category=Server і DeviceType=LinuxSRV
       None      — не підходить
     """
-    category    = get_property(asset, "asset_category")
-    device_type = get_property(asset, "device_type")
+    category    = get_property(asset, "Asset Category")
+    device_type = get_property(asset, "Device Type")
 
     if category.lower() != "server":
         return None
